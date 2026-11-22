@@ -1,0 +1,19 @@
+name: Verify source site reachability
+on:
+  push:
+    paths:
+      - .github/workflows/source-check.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check published site resources
+        shell: bash
+        run: |
+          for path in / /index.html /p1.webp /hongshao.mp4; do
+            printf '%s: ' "$path"
+            curl -L -sS -o /dev/null --connect-timeout 10 --max-time 45 -w '%{http_code}, bytes=%{size_download}, content-type=%{content_type}\n' "https://wang-yimeng-baritone.nativeazure.chatgpt.site$path" || true
+          done
