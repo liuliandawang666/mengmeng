@@ -1,0 +1,78 @@
+name: Import original Yimeng website
+on:
+  push:
+    paths:
+      - .github/workflows/import-original.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Download and validate original site before replacement
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, subprocess, sys, urllib.parse, re, html.parser
+          files = ["index.html","song-1.html","song-2.html","song-3.html","song-4.html","hongshao.jpg","hongshao.mp4","recital-poster.webp","p1.webp","p2.webp","p3.webp","p4.webp","p5.webp","p6.webp","p7.webp","p8.webp","p9.webp","verse1.webp","verse2.webp","verse3.webp","verse4.webp","track-1.mp3","track-2.mp3","track-3.mp3","track-4.mp3","yimeng-intro.m4a"]
+          base = "https://wang-yimeng-baritone.nativeazure.chatgpt.site/"
+          stage = pathlib.Path(".site-import-staging")
+          stage.mkdir(exist_ok=True)
+          for name in files:
+              dest = stage / name
+              url = urllib.parse.urljoin(base, urllib.parse.quote(name))
+              print(f"FETCH {name}", flush=True)
+              subprocess.run(["curl","--fail","--show-error","--silent","--location","--retry","3","--retry-delay","2","--connect-timeout","15","--max-time","120", "--output",str(dest),url],check=True)
+              data = dest.read_bytes()
+              if len(data)<150: raise RuntimeError(f"{name} unexpected tiny response {len(data)}")
+              if name.endswith(".html") and not (b"<html" in data.lower() or b"<!doctype" in data.lower()): raise RuntimeError(name+" not HTML")
+              if name.endswith(".webp") and not (data.startswith(b"RIFF") and data[8:12]==b"WEBP"): raise RuntimeError(name+" not WEBP")
+              if name.endswith(".jpg") and not data.startswith(bytes.fromhex("ffd8")): raise RuntimeError(name+" not JPG")
+              if name.endswith(".mp4") and data[4:8]!=b"ftyp": raise RuntimeError(name+" not MP4")
+              if name.endswith(".m4a") and data[4:8]!=b"ftyp": raise RuntimeError(name+" not M4A")
+              if name.endswith(".mp3") and not (data[:3]==b"ID3" or data[0]==0xff): raise RuntimeError(name+" not MP3")
+              print(f"OK {name} {len(data)} bytes", flush=True)
+          class Parser(html.parser.HTMLParser):
+              def __init__(self): super().__init__(); self.refs=set()
+              def handle_starttag(self,tag,attrs):
+                  for k,v in attrs:
+                      if k in ("href","src","poster") and v: self.refs.add(v)
+          refs = set()
+          for f in stage.glob("*.html"):
+              p=Parser()
+              p.feed(f.read_text(encoding="utf-8"))
+              refs |= p.refs
+          missing=[]
+          for ref in refs:
+              u=urllib.parse.urlparse(ref)
+              if u.scheme or u.netloc or ref.startswith(("#","mailto:","tel:","data:","javascript:")): continue
+              path=urllib.parse.unquote(u.path).lstrip("/")
+              if path and not (stage/path).is_file(): missing.append((ref,path))
+          if missing:
+              print("MISSING REFERENCES",missing)
+              sys.exit(1)
+          if b"\xe7\x8e\x8b\xe8\x89\xba\xe8\x92\x99" not in (stage/"index.html").read_bytes(): raise RuntimeError("Homepage title check failed")
+          print("ALL FILES FETCHED; LOCAL LINKS VALIDATED",flush=True)
+          for f in stage.iterdir():
+              os.replace(f, pathlib.Path(f.name))
+          stage.rmdir()
+          PY
+      - name: Commit replacement to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f chatgpt-access-test.txt .github/workflows/source-check.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No site changes needed"
+          else
+            git commit -m "Replace GitHub Pages site with Yimeng's published original"
+            git push origin HEAD:main
+          fi
